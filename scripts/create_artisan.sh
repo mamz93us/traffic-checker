@@ -1,124 +1,60 @@
 #!/bin/bash
 PHP="/opt/cpanel/ea-php83/root/usr/bin/php"
 APP="/home/samirgroupnet/traffic-checker"
+DOMAIN_ROOT="/home/samirgroupnet/public_html/t.samirgroup.net"
 
 echo "Creating all missing Laravel files..."
 
-# artisan
+# artisan — skip if already in git
+if [ ! -f "$APP/artisan" ]; then
 cat > "$APP/artisan" << 'PHP'
 #!/usr/bin/env php
 <?php
+use Symfony\Component\Console\Input\ArgvInput;
 define('LARAVEL_START', microtime(true));
 require __DIR__.'/vendor/autoload.php';
-$app = require_once __DIR__.'/bootstrap/app.php';
-$kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
-$status = $kernel->handle(
-    $input = new Symfony\Component\Console\Input\ArgvInput,
-    new Symfony\Component\Console\Output\ConsoleOutput
-);
-$kernel->terminate($input, $status);
+$status = (require_once __DIR__.'/bootstrap/app.php')
+    ->handleCommand(new ArgvInput);
 exit($status);
 PHP
 chmod +x "$APP/artisan"
-echo "✓ artisan"
+echo "✓ artisan (created)"
+else
+chmod +x "$APP/artisan"
+echo "✓ artisan (already exists)"
+fi
 
-# bootstrap/
+# bootstrap/ — skip app.php if already in git
 mkdir -p "$APP/bootstrap/cache"
-cat > "$APP/bootstrap/app.php" << 'PHP'
-<?php
-$app = new Illuminate\Foundation\Application(
-    $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__)
-);
-$app->singleton(
-    Illuminate\Contracts\Http\Kernel::class,
-    App\Http\Kernel::class
-);
-$app->singleton(
-    Illuminate\Contracts\Console\Kernel::class,
-    App\Console\Kernel::class
-);
-$app->singleton(
-    Illuminate\Contracts\Debug\ExceptionHandler::class,
-    App\Exceptions\Handler::class
-);
-return $app;
-PHP
-echo "✓ bootstrap/app.php"
+if [ ! -f "$APP/bootstrap/app.php" ]; then
+echo "✗ bootstrap/app.php missing — run: git pull"
+exit 1
+else
+echo "✓ bootstrap/app.php (already exists)"
+fi
 
-# public/
+# public/ — skip index.php if already in git
 mkdir -p "$APP/public"
-cat > "$APP/public/index.php" << 'PHP'
-<?php
-define('LARAVEL_START', microtime(true));
-if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
-    require $maintenance;
-}
-require __DIR__.'/../vendor/autoload.php';
-$app = require_once __DIR__.'/../bootstrap/app.php';
-$kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
-$response = $kernel->handle(
-    $request = Illuminate\Http\Request::capture()
-)->send();
-$kernel->terminate($request, $response);
-PHP
+if [ ! -f "$APP/public/index.php" ]; then
+echo "✗ public/index.php missing — run: git pull"
+exit 1
+else
+echo "✓ public/index.php (already exists)"
+fi
 
-cat > "$APP/public/.htaccess" << 'HTACCESS'
-<IfModule mod_rewrite.c>
-    <IfModule mod_negotiation.c>
-        Options -MultiViews -Indexes
-    </IfModule>
-    RewriteEngine On
-    RewriteCond %{HTTP:Authorization} .
-    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-    RewriteCond %{REQUEST_FILENAME} !-d
-    RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteRule ^ index.php [L]
-</IfModule>
-HTACCESS
-echo "✓ public/index.php + .htaccess"
+if [ ! -f "$APP/public/.htaccess" ]; then
+echo "✗ public/.htaccess missing — run: git pull"
+exit 1
+else
+echo "✓ public/.htaccess (already exists)"
+fi
 
-# App/Http/Kernel.php
-mkdir -p "$APP/app/Http"
-cat > "$APP/app/Http/Kernel.php" << 'PHP'
-<?php
-namespace App\Http;
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        \Illuminate\Http\Middleware\TrustProxies::class,
-        \Illuminate\Http\Middleware\HandleCors::class,
-        \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
-        \Illuminate\Http\Middleware\ValidatePostSize::class,
-        \Illuminate\Foundation\Http\Middleware\TrimStrings::class,
-        \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
-    ];
-    protected $middlewareGroups = [
-        'web' => [
-            \Illuminate\Cookie\Middleware\EncryptCookies::class,
-            \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
-            \Illuminate\Session\Middleware\StartSession::class,
-            \Illuminate\View\Middleware\ShareErrorsFromSession::class,
-            \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
-            \Illuminate\Routing\Middleware\SubstituteBindings::class,
-        ],
-        'api' => [
-            \Illuminate\Routing\Middleware\ThrottleRequests::class.':api',
-            \Illuminate\Routing\Middleware\SubstituteBindings::class,
-        ],
-    ];
-    protected $middlewareAliases = [
-        'auth'     => \Illuminate\Auth\Middleware\Authenticate::class,
-        'guest'    => \Illuminate\Auth\Middleware\RedirectIfAuthenticated::class,
-        'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
-        'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
-    ];
-}
-PHP
-echo "✓ App/Http/Kernel.php"
+# App/Http/Kernel.php — only needed for old-style bootstrap, skip for Laravel 11
+echo "✓ App/Http/Kernel.php (not needed, Laravel 11 style)"
 
 # App/Exceptions/Handler.php
 mkdir -p "$APP/app/Exceptions"
+if [ ! -f "$APP/app/Exceptions/Handler.php" ]; then
 cat > "$APP/app/Exceptions/Handler.php" << 'PHP'
 <?php
 namespace App\Exceptions;
@@ -129,7 +65,10 @@ class Handler extends ExceptionHandler
     public function register(): void {}
 }
 PHP
-echo "✓ App/Exceptions/Handler.php"
+echo "✓ App/Exceptions/Handler.php (created)"
+else
+echo "✓ App/Exceptions/Handler.php (already exists)"
+fi
 
 # storage dirs
 mkdir -p "$APP/storage/framework/"{sessions,views,cache/data}
@@ -137,12 +76,32 @@ mkdir -p "$APP/storage/logs"
 touch "$APP/storage/logs/laravel.log"
 echo "✓ storage directories"
 
+# cPanel domain bridge — routes t.samirgroup.net → traffic-checker/public
+mkdir -p "$DOMAIN_ROOT"
+
+cat > "$DOMAIN_ROOT/index.php" << 'PHP'
+<?php
+use Illuminate\Http\Request;
+define('LARAVEL_START', microtime(true));
+if (file_exists($maintenance = __DIR__.'/../../traffic-checker/storage/framework/maintenance.php')) {
+    require $maintenance;
+}
+require __DIR__.'/../../traffic-checker/vendor/autoload.php';
+(require_once __DIR__.'/../../traffic-checker/bootstrap/app.php')
+    ->handleRequest(Request::capture());
+PHP
+
+cp "$APP/public/.htaccess" "$DOMAIN_ROOT/.htaccess"
+echo "✓ cPanel domain bridge (public_html/t.samirgroup.net/)"
+
 # permissions
 chown -R samirgroupnet:samirgroupnet "$APP"
 chmod -R 755 "$APP"
 chmod +x "$APP/artisan"
 chmod -R 775 "$APP/storage"
 chmod -R 775 "$APP/bootstrap/cache"
+chown -R samirgroupnet:samirgroupnet "$DOMAIN_ROOT"
+chmod -R 755 "$DOMAIN_ROOT"
 echo "✓ permissions"
 
 echo ""
