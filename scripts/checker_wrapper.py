@@ -74,7 +74,15 @@ result = {}
 try:
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
+        # Use system/custom Chromium if PLAYWRIGHT_CHROMIUM_PATH is set
+        import glob as _glob
+        _chromium_path = os.environ.get('PLAYWRIGHT_CHROMIUM_PATH', '')
+        if _chromium_path:
+            # Support glob patterns (e.g. /path/chromium-*/chrome-linux/chrome)
+            _matches = _glob.glob(_chromium_path)
+            _chromium_path = _matches[0] if _matches else _chromium_path
+
+        _launch_kwargs = dict(
             headless=True,
             slow_mo=300,
             args=[
@@ -85,6 +93,10 @@ try:
                 '--single-process',   # Helps on cPanel/CloudLinux
             ],
         )
+        if _chromium_path and os.path.isfile(_chromium_path):
+            _launch_kwargs['executable_path'] = _chromium_path
+
+        browser = pw.chromium.launch(**_launch_kwargs)
         ctx = browser.new_context(
             locale='ar-EG',
             timezone_id='Africa/Cairo',
