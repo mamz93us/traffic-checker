@@ -5,6 +5,7 @@ Works on both VPS and WHM/cPanel servers.
 
 Reads ONE vehicle as JSON from stdin.
 Writes ONE result as JSON to stdout.
+All other output (print statements from traffic_checker.py) goes to stderr.
 """
 
 import sys, json, os, glob, shutil
@@ -25,12 +26,26 @@ for path in search_paths:
     if os.path.exists(path):
         with open(path) as f:
             src = f.read()
-        # Force headless + no photo screenshots for server mode
-        src = src.replace('HEADLESS = False',              'HEADLESS = True')
-        src = src.replace('SAVE_VIOLATION_PHOTOS   = True','SAVE_VIOLATION_PHOTOS   = False')
-        src = src.replace("OUTPUT_JSON             = \"violations_report.json\"",
+
+        # Force server-safe settings
+        src = src.replace('HEADLESS = False',               'HEADLESS = True')
+        src = src.replace('SAVE_VIOLATION_PHOTOS   = True', 'SAVE_VIOLATION_PHOTOS   = False')
+        src = src.replace('OUTPUT_JSON             = "violations_report.json"',
                           'OUTPUT_JSON             = None')
-        exec(compile(src, path, 'exec'), globals())
+
+        # Execute in a namespace where __name__ != '__main__' so that
+        # the script's  `if __name__ == "__main__": sys.exit(main())`
+        # block does NOT run — we only want the function definitions.
+        try:
+            module_globals = {'__name__': 'traffic_checker_module', '__file__': path}
+            exec(compile(src, path, 'exec'), module_globals)
+            # Pull the defined functions/globals into our own namespace
+            globals().update({k: v for k, v in module_globals.items()
+                              if not k.startswith('__')})
+        except Exception as e:
+            print(json.dumps({"error": f"Failed to load traffic_checker.py: {e}"}))
+            sys.exit(2)
+
         loaded = True
         break
 
@@ -42,13 +57,19 @@ if not loaded:
 try:
     vehicle = json.loads(sys.stdin.read())
 except json.JSONDecodeError as e:
-    print(json.dumps({"error": f"Invalid JSON: {e}"}))
+    print(json.dumps({"error": f"Invalid JSON from stdin: {e}"}))
     sys.exit(2)
 
 output_dir = vehicle.get('output_dir', '/tmp/traffic_screenshots')
 os.makedirs(output_dir, exist_ok=True)
 
-# ── Run the check ─────────────────────────────────────────────
+# ── Redirect stdout → stderr during the check ─────────────────
+# traffic_checker.py has many print() statements (progress output,
+# box-drawing separators, etc.).  By redirecting stdout to stderr
+# while the check runs, we keep stdout clean for our final JSON.
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
 result = {}
 try:
     from playwright.sync_api import sync_playwright
@@ -82,6 +103,9 @@ try:
 except Exception as e:
     result['error'] = str(e)
     result['status'] = 'error'
+finally:
+    # Always restore real stdout before printing the result
+    sys.stdout = _real_stdout
 
 # ── Move screenshots to output_dir ────────────────────────────
 plate = vehicle.get('numbers', 'unknown')
@@ -92,4 +116,5 @@ for pattern in [f"result_{plate}*.png", "result_*.png"]:
         result['screenshot_path'] = dest
         break
 
+# ── Output clean JSON to stdout ───────────────────────────────
 print(json.dumps(result, ensure_ascii=False))
