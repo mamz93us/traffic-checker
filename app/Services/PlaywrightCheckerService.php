@@ -68,7 +68,7 @@ class PlaywrightCheckerService
             Log::error("Playwright check failed for vehicle #{$vehicle->id} ({$vehicle->plate}): {$e->getMessage()}");
             $check->update([
                 'status'        => 'error',
-                'error_message' => $e->getMessage(),
+                'error_message' => $this->sanitizeText($e->getMessage()),
             ]);
         }
 
@@ -148,9 +148,21 @@ class PlaywrightCheckerService
             throw new \RuntimeException("No output from Python script. Stderr: " . $process->getErrorOutput());
         }
 
-        $result = json_decode($stdout, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new \RuntimeException("Invalid JSON from Python: " . substr($stdout, 0, 200));
+        // traffic_checker.py may print non-JSON lines to stdout before the result.
+        // Find the last line that is valid JSON.
+        $result = null;
+        foreach (array_reverse(explode("\n", $stdout)) as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+            $decoded = json_decode($line, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $result = $decoded;
+                break;
+            }
+        }
+
+        if ($result === null) {
+            throw new \RuntimeException("No JSON found in Python output: " . substr($stdout, 0, 200));
         }
 
         if (isset($result['error']) && !empty($result['error'])) {
@@ -161,6 +173,15 @@ class PlaywrightCheckerService
             ($result['has_violations'] ? "⚠️ {$result['grand_total']} EGP" : "✅ clean"));
 
         return $result;
+    }
+
+    /** Strip non-ASCII/non-printable chars so MySQL latin1/utf8 columns don't reject the value. */
+    protected function sanitizeText(string $text): string
+    {
+        return mb_convert_encoding(
+            preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/u', '?', $text),
+            'UTF-8', 'UTF-8'
+        );
     }
 
     protected function storeScreenshot(Vehicle $vehicle, array $result): ?string
