@@ -10,12 +10,15 @@ class AdminUserSeeder extends Seeder
 {
     public function run(): void
     {
+        $email    = config('auth.admin_email', 'admin@example.com');
+        $password = config('auth.admin_password', 'change_me');
+
         DB::table('users')->updateOrInsert(
-            ['email' => env('FILAMENT_ADMIN_EMAIL', 'admin@example.com')],
+            ['email' => $email],
             [
                 'name'              => 'Admin',
-                'email'             => env('FILAMENT_ADMIN_EMAIL', 'admin@example.com'),
-                'password'          => Hash::make(env('FILAMENT_ADMIN_PASSWORD', 'change_me')),
+                'email'             => $email,
+                'password'          => Hash::make($password),
                 'email_verified_at' => now(),
                 'created_at'        => now(),
                 'updated_at'        => now(),
