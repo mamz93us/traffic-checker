@@ -143,37 +143,42 @@ else
     echo "  mysqld_safe started (PID $MYSQLD_PID), waiting 8s..."
     sleep 8
 
-    # Restore root to auth_socket
-    mysql -u root <<'RESET_SQL' 2>/dev/null || true
+    # Set root to password auth (caching_sha2_password is MySQL 8 default).
+    # We avoid auth_socket because its plugin may not be loaded on all images.
+    echo "  Resetting root to password authentication (pass stored in $DB_ROOT_PASS_FILE)..."
+    mysql -u root <<RESET_SQL 2>/dev/null || true
 FLUSH PRIVILEGES;
-ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket;
+ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY '${DB_ROOT_PASS}';
 FLUSH PRIVILEGES;
 RESET_SQL
 
     echo "  Stopping unsafe mysqld_safe..."
-    pkill -f mysqld_safe 2>/dev/null || kill "$MYSQLD_PID" 2>/dev/null || true
-    pkill -f mysqld 2>/dev/null || true
+    pkill -9 -x mysqld_safe 2>/dev/null || kill "$MYSQLD_PID" 2>/dev/null || true
+    pkill -9 -x mysqld 2>/dev/null || true
     sleep 4
 
     # Restart MySQL normally
     systemctl start mysql
     sleep 3
 
-    # Try again
-    if mysql -u root -e "SELECT 1;" > /dev/null 2>&1; then
-        MYSQL_CMD="mysql -u root"
-        ok "MySQL root auth_socket restored"
+    # Try again with stored root password
+    if mysql -u root -p"${DB_ROOT_PASS}" -e "SELECT 1;" > /dev/null 2>&1; then
+        MYSQL_CMD="mysql -u root -p${DB_ROOT_PASS}"
+        ok "MySQL root password auth restored (pass: $DB_ROOT_PASS_FILE)"
     else
         echo ""
         echo -e "${RED}  ✗ ERROR: Cannot connect to MySQL as root even after reset!${NC}"
         echo ""
-        echo "  Manual fix:"
-        echo "    sudo systemctl stop mysql"
-        echo "    sudo mysqld_safe --skip-grant-tables --skip-networking &"
-        echo "    sleep 5"
-        echo "    mysql -u root -e \"FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket; FLUSH PRIVILEGES;\""
-        echo "    sudo systemctl restart mysql"
-        echo "    Then re-run this script."
+        echo "  Manual fix — run these commands then re-run this script:"
+        echo "    DB_ROOT_PASS=\$(cat /root/.tc_db_root_pass)"
+        echo "    systemctl stop mysql"
+        echo "    pkill -9 -x mysqld; pkill -9 -x mysqld_safe"
+        echo "    mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld"
+        echo "    mysqld_safe --skip-grant-tables --skip-networking &"
+        echo "    sleep 8"
+        echo "    mysql -u root -e \"FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY '\${DB_ROOT_PASS}'; FLUSH PRIVILEGES;\""
+        echo "    pkill -9 -x mysqld_safe; pkill -9 -x mysqld; sleep 4"
+        echo "    systemctl start mysql"
         exit 1
     fi
 fi
