@@ -108,17 +108,14 @@ else
     ok "MySQL installed and started"
 fi
 
-# Create DB/user if not exists
+# Create DB/user — Ubuntu uses auth_socket for root (no password needed when running as root)
 echo "  Creating database and user..."
-mysql -u root <<SQL 2>/dev/null || mysql -u root -p"${DB_ROOT_PASS}" <<SQL2 || true
-  ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${DB_ROOT_PASS}';
+mysql <<SQL
   CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
   GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
   FLUSH PRIVILEGES;
 SQL
-  SELECT 1;
-SQL2
 ok "Database ready: $DB_NAME / $DB_USER"
 
 # ── 6. Nginx ──────────────────────────────────────────────────────────────────
@@ -181,7 +178,11 @@ fi
 
 # ── 10. Composer dependencies ─────────────────────────────────────────────────
 info "Step 10: PHP dependencies (composer install)"
-composer install --working-dir="$APP_DIR" --no-dev --optimize-autoloader --no-interaction
+# bootstrap/cache must exist before composer runs post-install scripts
+mkdir -p "$APP_DIR/bootstrap/cache"
+chown -R "$APP_USER":"$APP_USER" "$APP_DIR/bootstrap"
+chmod -R 775 "$APP_DIR/bootstrap/cache"
+COMPOSER_ALLOW_SUPERUSER=1 composer install --working-dir="$APP_DIR" --no-dev --optimize-autoloader --no-interaction
 ok "PHP dependencies installed"
 
 # ── 11. .env setup ─────────────────────────────────────────────────────────────
