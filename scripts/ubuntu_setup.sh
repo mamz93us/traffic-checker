@@ -108,15 +108,29 @@ else
     ok "MySQL installed and started"
 fi
 
-# Create DB/user — Ubuntu uses auth_socket for root (no password needed when running as root)
-echo "  Creating database and user..."
-mysql <<SQL
+# Create DB/user — detect whether root uses auth_socket or password
+echo "  Detecting MySQL root auth method..."
+if mysql -e "SELECT 1;" > /dev/null 2>&1; then
+    MYSQL_CMD="mysql"
+    echo "  Using auth_socket (no password)"
+elif mysql -u root -p"${DB_ROOT_PASS}" -e "SELECT 1;" > /dev/null 2>&1; then
+    MYSQL_CMD="mysql -u root -p${DB_ROOT_PASS}"
+    echo "  Using stored root password"
+else
+    echo "  WARNING: Cannot connect to MySQL as root — skipping DB setup"
+    echo "  Run manually: mysql -u root  then create DB/user"
+    MYSQL_CMD=""
+fi
+
+if [ -n "$MYSQL_CMD" ]; then
+    $MYSQL_CMD <<SQL
   CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
   GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
   FLUSH PRIVILEGES;
 SQL
-ok "Database ready: $DB_NAME / $DB_USER"
+    ok "Database ready: $DB_NAME / $DB_USER"
+fi
 
 # ── 6. Nginx ──────────────────────────────────────────────────────────────────
 info "Step 6: Nginx"
@@ -182,7 +196,7 @@ info "Step 10: PHP dependencies (composer install)"
 mkdir -p "$APP_DIR/bootstrap/cache"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR/bootstrap"
 chmod -R 775 "$APP_DIR/bootstrap/cache"
-COMPOSER_ALLOW_SUPERUSER=1 composer install --working-dir="$APP_DIR" --no-dev --optimize-autoloader --no-interaction
+COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 composer install --working-dir="$APP_DIR" --no-dev --optimize-autoloader --no-interaction
 ok "PHP dependencies installed"
 
 # ── 11. .env setup ─────────────────────────────────────────────────────────────
