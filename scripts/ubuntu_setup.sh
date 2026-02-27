@@ -13,7 +13,7 @@ APP_USER="www-data"
 REPO_URL="https://github.com/mamz93us/traffic-checker.git"
 REPO_BRANCH="claude/epic-solomon"
 PHP_VER="8.3"
-DOMAIN="${DOMAIN:-t.samirgroup.net}"
+DOMAIN="${DOMAIN:-traffic.deevar.cloud}"
 DB_NAME="${DB_NAME:-traffic_checker}"
 DB_USER="${DB_USER:-traffic_user}"
 DB_PASS_FILE="/root/.tc_db_pass"
@@ -108,28 +108,97 @@ else
     ok "MySQL installed and started"
 fi
 
-# Create DB/user — detect whether root uses auth_socket or password
+# ── 5b. MySQL root auth detection ────────────────────────────────────────────
 echo "  Detecting MySQL root auth method..."
-if mysql -e "SELECT 1;" > /dev/null 2>&1; then
+MYSQL_CMD=""
+
+# Method 1: auth_socket with explicit -u root  (Ubuntu default for fresh install)
+if mysql -u root -e "SELECT 1;" > /dev/null 2>&1; then
+    MYSQL_CMD="mysql -u root"
+    echo "  Auth: auth_socket with -u root"
+
+# Method 2: auth_socket via current OS user (also root)
+elif mysql -e "SELECT 1;" > /dev/null 2>&1; then
     MYSQL_CMD="mysql"
-    echo "  Using auth_socket (no password)"
+    echo "  Auth: auth_socket (OS user = root)"
+
+# Method 3: stored root password from a previous run
 elif mysql -u root -p"${DB_ROOT_PASS}" -e "SELECT 1;" > /dev/null 2>&1; then
     MYSQL_CMD="mysql -u root -p${DB_ROOT_PASS}"
-    echo "  Using stored root password"
+    echo "  Auth: stored root password"
+
+# Method 4: Emergency reset — restart with --skip-grant-tables and restore auth_socket
 else
-    echo "  WARNING: Cannot connect to MySQL as root — skipping DB setup"
-    echo "  Run manually: mysql -u root  then create DB/user"
-    MYSQL_CMD=""
+    echo "  All standard methods failed — attempting emergency root reset..."
+    systemctl stop mysql
+    sleep 2
+
+    # Start without grant tables in background
+    mysqld_safe --skip-grant-tables --skip-networking &
+    MYSQLD_PID=$!
+    echo "  mysqld_safe started (PID $MYSQLD_PID), waiting 6s..."
+    sleep 6
+
+    # Restore root to auth_socket
+    mysql -u root <<'RESET_SQL' 2>/dev/null || true
+FLUSH PRIVILEGES;
+ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket;
+FLUSH PRIVILEGES;
+RESET_SQL
+
+    echo "  Stopping unsafe mysqld_safe..."
+    kill "$MYSQLD_PID" 2>/dev/null || true
+    sleep 3
+
+    # Restart MySQL normally
+    systemctl start mysql
+    sleep 2
+
+    # Try again
+    if mysql -u root -e "SELECT 1;" > /dev/null 2>&1; then
+        MYSQL_CMD="mysql -u root"
+        ok "MySQL root auth_socket restored"
+    else
+        echo ""
+        echo -e "${RED}  ✗ ERROR: Cannot connect to MySQL as root even after reset!${NC}"
+        echo ""
+        echo "  Manual fix:"
+        echo "    sudo systemctl stop mysql"
+        echo "    sudo mysqld_safe --skip-grant-tables --skip-networking &"
+        echo "    sleep 5"
+        echo "    mysql -u root -e \"FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED WITH auth_socket; FLUSH PRIVILEGES;\""
+        echo "    sudo systemctl restart mysql"
+        echo "    Then re-run this script."
+        exit 1
+    fi
 fi
 
-if [ -n "$MYSQL_CMD" ]; then
+# ── 5c. Create DB / user (idempotent) ─────────────────────────────────────────
+echo "  Verifying database access..."
+
+# Fast-path: traffic_user already works → nothing to do
+if mysql -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" -e "SELECT 1;" > /dev/null 2>&1; then
+    skip "Database ${DB_NAME} / ${DB_USER} (already accessible)"
+else
+    echo "  Setting up database and user..."
     $MYSQL_CMD <<SQL
-  CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-  CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
-  GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
-  FLUSH PRIVILEGES;
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+-- Always sync the password in case it changed between runs
+ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
 SQL
-    ok "Database ready: $DB_NAME / $DB_USER"
+
+    # Verify the connection actually works now
+    if mysql -u "${DB_USER}" -p"${DB_PASS}" "${DB_NAME}" -e "SELECT 1;" > /dev/null 2>&1; then
+        ok "Database ready: ${DB_NAME} / ${DB_USER}"
+    else
+        echo -e "${RED}  ✗ ERROR: DB user verification failed after creation!${NC}"
+        echo "  DB: ${DB_NAME}  User: ${DB_USER}  Pass: ${DB_PASS}"
+        echo "  Test: mysql -u ${DB_USER} -p'${DB_PASS}' ${DB_NAME} -e 'SELECT 1;'"
+        exit 1
+    fi
 fi
 
 # ── 6. Nginx ──────────────────────────────────────────────────────────────────
@@ -221,7 +290,15 @@ if [ ! -f "$APP_DIR/.env" ]; then
     fi
     ok ".env created"
 else
-    skip ".env (already exists)"
+    # On re-runs: always sync DB password in case it changed
+    sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${DB_PASS}|" "$APP_DIR/.env"
+    # Update Chromium path if Playwright was just installed
+    if [ -n "$CHROMIUM_BIN" ]; then
+        if grep -q "^PLAYWRIGHT_CHROMIUM_PATH=" "$APP_DIR/.env"; then
+            sed -i "s|PLAYWRIGHT_CHROMIUM_PATH=.*|PLAYWRIGHT_CHROMIUM_PATH=${CHROMIUM_BIN}|" "$APP_DIR/.env"
+        fi
+    fi
+    skip ".env (already exists — DB password and Chromium path synced)"
 fi
 
 # ── 12. Storage & permissions ─────────────────────────────────────────────────
@@ -240,10 +317,16 @@ ok "Permissions set"
 info "Step 13: Laravel setup"
 cd "$APP_DIR"
 
-echo "  → key:generate"
-php artisan key:generate --force
+# Generate key only if not already set
+if grep -qE "^APP_KEY=base64:.{40}" "$APP_DIR/.env" 2>/dev/null; then
+    skip "App key (already set)"
+else
+    echo "  → key:generate"
+    php artisan key:generate --force
+fi
 
-echo "  → config:cache"
+echo "  → config:clear + config:cache"
+php artisan config:clear
 php artisan config:cache
 
 echo "  → route:cache"
@@ -312,22 +395,28 @@ fi
 
 # ── 16. Cron ─────────────────────────────────────────────────────────────────
 info "Step 16: Laravel scheduler cron"
-if crontab -l 2>/dev/null | grep -q "artisan schedule:run"; then
-    skip "Cron job"
+CRON_FILE="/etc/cron.d/traffic-checker"
+if [ -f "$CRON_FILE" ]; then
+    skip "Cron job (file: $CRON_FILE)"
 else
-    (crontab -l 2>/dev/null; echo "* * * * * $APP_USER php $APP_DIR/artisan schedule:run >> /dev/null 2>&1") | crontab -
-    ok "Cron job added"
+    # /etc/cron.d/ format: min hour dom month dow USER command
+    echo "* * * * * ${APP_USER} php ${APP_DIR}/artisan schedule:run >> /dev/null 2>&1" > "$CRON_FILE"
+    chmod 644 "$CRON_FILE"
+    ok "Cron job added: $CRON_FILE"
 fi
 
 # ── 17. Supervisor ────────────────────────────────────────────────────────────
 info "Step 17: Supervisor (queue worker)"
-if installed supervisord || installed supervisorctl; then
-    skip "Supervisor (already installed)"
+if installed supervisorctl; then
+    skip "Supervisor binary (already installed)"
 else
     apt-get install -y supervisor
-    ok "Supervisor installed"
+    systemctl enable supervisor
+    systemctl start supervisor
+    ok "Supervisor installed and started"
 fi
 
+# Always write/update the supervisor config (idempotent)
 cat > /etc/supervisor/conf.d/traffic-checker.conf << SUPERVISOR
 [program:traffic-checker-worker]
 process_name=%(program_name)s_%(process_num)02d
@@ -346,19 +435,32 @@ SUPERVISOR
 
 supervisorctl reread
 supervisorctl update
-ok "Supervisor configured"
+# Start worker if not running, restart if config changed
+supervisorctl restart "traffic-checker-worker:*" 2>/dev/null \
+    || supervisorctl start "traffic-checker-worker:*" 2>/dev/null \
+    || true
+ok "Supervisor configured and worker started"
 
 # ── 18. UFW Firewall ─────────────────────────────────────────────────────────
 info "Step 18: UFW Firewall"
 apt-get install -y ufw
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw --force enable
-ok "Firewall configured"
+
+if ufw status | grep -q "Status: active"; then
+    # Ensure required ports are open even if already active
+    ufw allow ssh    > /dev/null 2>&1 || true
+    ufw allow 80/tcp > /dev/null 2>&1 || true
+    ufw allow 443/tcp > /dev/null 2>&1 || true
+    skip "UFW (already active — verified ports 22/80/443 open)"
+else
+    ufw --force reset
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow ssh
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw --force enable
+    ok "Firewall configured"
+fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
