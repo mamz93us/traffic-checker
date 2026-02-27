@@ -133,11 +133,15 @@ else
     systemctl stop mysql
     sleep 2
 
+    # Ensure the socket directory exists (missing on some Ubuntu images)
+    mkdir -p /var/run/mysqld
+    chown mysql:mysql /var/run/mysqld
+
     # Start without grant tables in background
     mysqld_safe --skip-grant-tables --skip-networking &
     MYSQLD_PID=$!
-    echo "  mysqld_safe started (PID $MYSQLD_PID), waiting 6s..."
-    sleep 6
+    echo "  mysqld_safe started (PID $MYSQLD_PID), waiting 8s..."
+    sleep 8
 
     # Restore root to auth_socket
     mysql -u root <<'RESET_SQL' 2>/dev/null || true
@@ -147,12 +151,13 @@ FLUSH PRIVILEGES;
 RESET_SQL
 
     echo "  Stopping unsafe mysqld_safe..."
-    kill "$MYSQLD_PID" 2>/dev/null || true
-    sleep 3
+    pkill -f mysqld_safe 2>/dev/null || kill "$MYSQLD_PID" 2>/dev/null || true
+    pkill -f mysqld 2>/dev/null || true
+    sleep 4
 
     # Restart MySQL normally
     systemctl start mysql
-    sleep 2
+    sleep 3
 
     # Try again
     if mysql -u root -e "SELECT 1;" > /dev/null 2>&1; then
