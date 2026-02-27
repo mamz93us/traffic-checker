@@ -119,10 +119,21 @@ class PlaywrightCheckerService
             'output_dir'  => $screenshotDir,
         ], JSON_UNESCAPED_UNICODE);
 
+        // Build subprocess environment — must forward Playwright paths so
+        // www-data can find the Chromium binary installed outside its home.
+        $env = [
+            'DISPLAY'                    => ':99',
+            'HOME'                       => '/root',
+        ];
+        $chromiumPath  = config('traffic.playwright_chromium_path', '');
+        $browsersPath  = config('traffic.playwright_browsers_path', '');
+        if (!empty($chromiumPath))  { $env['PLAYWRIGHT_CHROMIUM_PATH']  = $chromiumPath; }
+        if (!empty($browsersPath))  { $env['PLAYWRIGHT_BROWSERS_PATH']  = $browsersPath; }
+
         $process = new Process(
             [$this->pythonBin, $this->wrapperScript],
-            base_path(),                              // working directory
-            ['DISPLAY' => ':99', 'HOME' => '/root']  // Xvfb display + home
+            base_path(),  // working directory
+            $env
         );
 
         $process->setInput($vehicleJson);

@@ -3,9 +3,11 @@
 return [
 
     // ── Playwright / Python ───────────────────────────────────────────
-    'python_bin'     => env('PYTHON_BIN',         '/usr/bin/python3'),
-    'script_path'    => env('PYTHON_SCRIPT_PATH', base_path('../traffic_checker.py')),
-    'check_timeout'  => env('CHECK_TIMEOUT',       180),  // seconds per vehicle
+    'python_bin'              => env('PYTHON_BIN',                '/usr/bin/python3'),
+    'script_path'             => env('PYTHON_SCRIPT_PATH',        base_path('../traffic_checker.py')),
+    'check_timeout'           => env('CHECK_TIMEOUT',             180),  // seconds per vehicle
+    'playwright_chromium_path'=> env('PLAYWRIGHT_CHROMIUM_PATH',  ''),   // full path to chrome binary
+    'playwright_browsers_path'=> env('PLAYWRIGHT_BROWSERS_PATH',  ''),   // e.g. /opt/playwright
 
     // ── WhatsApp ──────────────────────────────────────────────────────
     'whatsapp_provider'    => env('WHATSAPP_PROVIDER',      'green_api'),
