@@ -1,7 +1,9 @@
 #!/bin/bash
 # =============================================================================
 #  Traffic Checker — Clean Ubuntu 22.04 / 24.04 Server Setup
-#  Run as root on a fresh server:  bash scripts/ubuntu_setup.sh
+#  - Resumes safely: skips already-installed components
+#  - Full output visible for tracing errors
+#  Run as root:  bash scripts/ubuntu_setup.sh
 # =============================================================================
 set -euo pipefail
 
@@ -9,120 +11,183 @@ set -euo pipefail
 APP_DIR="/var/www/traffic-checker"
 APP_USER="www-data"
 REPO_URL="https://github.com/mamz93us/traffic-checker.git"
-REPO_BRANCH="claude/epic-solomon"          # change to main after PR merge
+REPO_BRANCH="claude/epic-solomon"
 PHP_VER="8.3"
-DOMAIN="${DOMAIN:-t.samirgroup.net}"       # override: DOMAIN=example.com bash ubuntu_setup.sh
+DOMAIN="${DOMAIN:-t.samirgroup.net}"
 DB_NAME="${DB_NAME:-traffic_checker}"
 DB_USER="${DB_USER:-traffic_user}"
-DB_PASS="${DB_PASS:-$(openssl rand -base64 18 | tr -d '/+=')}"
-DB_ROOT_PASS="${DB_ROOT_PASS:-$(openssl rand -base64 18 | tr -d '/+=')}"
+DB_PASS_FILE="/root/.tc_db_pass"
+DB_ROOT_PASS_FILE="/root/.tc_db_root_pass"
 
-GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
-ok()   { echo -e "${GREEN}✓ $1${NC}"; }
-fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
-info() { echo -e "${YELLOW}▸ $1${NC}"; }
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+ok()      { echo -e "${GREEN}  ✓ $1${NC}"; }
+skip()    { echo -e "${CYAN}  ↷ $1 — already done, skipping${NC}"; }
+fail()    { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
+info()    { echo -e "\n${YELLOW}━━ $1 ━━${NC}"; }
+installed() { command -v "$1" &>/dev/null; }
 
+# Load or generate DB passwords (persist across re-runs)
+if [ -f "$DB_PASS_FILE" ]; then
+    DB_PASS=$(cat "$DB_PASS_FILE")
+else
+    DB_PASS=$(openssl rand -base64 18 | tr -d '/+=')
+    echo "$DB_PASS" > "$DB_PASS_FILE"
+    chmod 600 "$DB_PASS_FILE"
+fi
+if [ -f "$DB_ROOT_PASS_FILE" ]; then
+    DB_ROOT_PASS=$(cat "$DB_ROOT_PASS_FILE")
+else
+    DB_ROOT_PASS=$(openssl rand -base64 18 | tr -d '/+=')
+    echo "$DB_ROOT_PASS" > "$DB_ROOT_PASS_FILE"
+    chmod 600 "$DB_ROOT_PASS_FILE"
+fi
+
+echo ""
 echo "============================================================"
 echo "  Traffic Checker — Ubuntu Server Setup"
 echo "  Domain : $DOMAIN"
 echo "  App dir: $APP_DIR"
+echo "  DB name: $DB_NAME / user: $DB_USER"
 echo "============================================================"
 
 # ── 1. System update ──────────────────────────────────────────────────────────
-info "Updating system packages..."
-apt-get update -qq && apt-get upgrade -y -qq
+info "Step 1: System update"
+apt-get update
+apt-get upgrade -y
 ok "System updated"
 
 # ── 2. Essential tools ────────────────────────────────────────────────────────
-info "Installing essential tools..."
-apt-get install -y -qq \
+info "Step 2: Essential tools"
+apt-get install -y \
     curl wget git unzip zip gnupg2 ca-certificates lsb-release \
     software-properties-common apt-transport-https
 ok "Essential tools installed"
 
 # ── 3. PHP 8.3 ───────────────────────────────────────────────────────────────
-info "Installing PHP $PHP_VER..."
-add-apt-repository -y ppa:ondrej/php > /dev/null 2>&1
-apt-get update -qq
-apt-get install -y -qq \
-    php${PHP_VER}-fpm \
-    php${PHP_VER}-cli \
-    php${PHP_VER}-mysql \
-    php${PHP_VER}-sqlite3 \
-    php${PHP_VER}-mbstring \
-    php${PHP_VER}-xml \
-    php${PHP_VER}-curl \
-    php${PHP_VER}-zip \
-    php${PHP_VER}-bcmath \
-    php${PHP_VER}-gd \
-    php${PHP_VER}-intl \
-    php${PHP_VER}-redis
-# Note: openssl, tokenizer, fileinfo are built into PHP core on Ubuntu — no separate package needed
-ok "PHP $PHP_VER installed"
+info "Step 3: PHP $PHP_VER"
+if php${PHP_VER} --version &>/dev/null; then
+    skip "PHP $PHP_VER"
+else
+    echo "  Adding ppa:ondrej/php..."
+    add-apt-repository -y ppa:ondrej/php
+    apt-get update
+    apt-get install -y \
+        php${PHP_VER}-fpm \
+        php${PHP_VER}-cli \
+        php${PHP_VER}-mysql \
+        php${PHP_VER}-sqlite3 \
+        php${PHP_VER}-mbstring \
+        php${PHP_VER}-xml \
+        php${PHP_VER}-curl \
+        php${PHP_VER}-zip \
+        php${PHP_VER}-bcmath \
+        php${PHP_VER}-gd \
+        php${PHP_VER}-intl \
+        php${PHP_VER}-redis
+    ok "PHP $PHP_VER installed"
+fi
+php${PHP_VER} --version
 
 # ── 4. Composer ───────────────────────────────────────────────────────────────
-info "Installing Composer..."
-curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer > /dev/null
-ok "Composer installed: $(composer --version 2>/dev/null | head -1)"
+info "Step 4: Composer"
+if installed composer; then
+    skip "Composer ($(composer --version | head -1))"
+else
+    curl -sS https://getcomposer.org/installer | php${PHP_VER} -- --install-dir=/usr/local/bin --filename=composer
+    ok "Composer installed: $(composer --version | head -1)"
+fi
 
 # ── 5. MySQL ──────────────────────────────────────────────────────────────────
-info "Installing MySQL..."
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mysql-server
+info "Step 5: MySQL"
+if systemctl is-active --quiet mysql 2>/dev/null; then
+    skip "MySQL (already running)"
+else
+    DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server
+    systemctl enable mysql
+    systemctl start mysql
+    ok "MySQL installed and started"
+fi
 
-# Secure MySQL and create DB/user
-mysql -u root <<SQL
+# Create DB/user if not exists
+echo "  Creating database and user..."
+mysql -u root <<SQL 2>/dev/null || mysql -u root -p"${DB_ROOT_PASS}" <<SQL2 || true
   ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${DB_ROOT_PASS}';
   CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
   GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
   FLUSH PRIVILEGES;
 SQL
-ok "MySQL installed — DB: $DB_NAME | User: $DB_USER"
+  SELECT 1;
+SQL2
+ok "Database ready: $DB_NAME / $DB_USER"
 
 # ── 6. Nginx ──────────────────────────────────────────────────────────────────
-info "Installing Nginx..."
-apt-get install -y -qq nginx
-ok "Nginx installed"
+info "Step 6: Nginx"
+if systemctl is-active --quiet nginx 2>/dev/null; then
+    skip "Nginx (already running)"
+else
+    apt-get install -y nginx
+    systemctl enable nginx
+    systemctl start nginx
+    ok "Nginx installed and started"
+fi
 
-# ── 7. Python 3 + pip + Playwright ───────────────────────────────────────────
-info "Installing Python 3 + Playwright..."
-apt-get install -y -qq python3 python3-pip python3-venv
+# ── 7. Python 3 + Playwright ─────────────────────────────────────────────────
+info "Step 7: Python 3 + Playwright + Chromium"
+apt-get install -y python3 python3-pip python3-venv
 
-pip3 install playwright --break-system-packages 2>/dev/null || \
-pip3 install playwright
+if python3 -c "import playwright" &>/dev/null; then
+    skip "Playwright Python package"
+else
+    pip3 install playwright --break-system-packages
+    ok "Playwright installed"
+fi
 
-# Install Playwright's Chromium and all its OS dependencies
-python3 -m playwright install chromium
-python3 -m playwright install-deps chromium
-ok "Python + Playwright + Chromium installed"
+CHROMIUM_BIN=$(find /root/.cache/ms-playwright -name "chrome" -type f 2>/dev/null | head -1 || true)
+if [ -n "$CHROMIUM_BIN" ] && [ -f "$CHROMIUM_BIN" ]; then
+    skip "Playwright Chromium (found at $CHROMIUM_BIN)"
+else
+    echo "  Installing Playwright Chromium browser..."
+    python3 -m playwright install chromium
+    echo "  Installing Chromium OS dependencies..."
+    python3 -m playwright install-deps chromium
+    CHROMIUM_BIN=$(find /root/.cache/ms-playwright -name "chrome" -type f 2>/dev/null | head -1 || true)
+    ok "Chromium installed at: $CHROMIUM_BIN"
+fi
 
-# ── 8. Node.js (for frontend assets) ─────────────────────────────────────────
-info "Installing Node.js 20..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
-apt-get install -y -qq nodejs
-ok "Node.js installed: $(node --version)"
+# ── 8. Node.js ────────────────────────────────────────────────────────────────
+info "Step 8: Node.js 20"
+if installed node; then
+    skip "Node.js ($(node --version))"
+else
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+    ok "Node.js installed: $(node --version)"
+fi
 
 # ── 9. Clone / update repo ───────────────────────────────────────────────────
-info "Cloning repository..."
+info "Step 9: Repository"
 if [ -d "$APP_DIR/.git" ]; then
+    echo "  Repo exists — pulling latest..."
+    git -C "$APP_DIR" fetch origin
+    git -C "$APP_DIR" checkout "$REPO_BRANCH"
     git -C "$APP_DIR" pull origin "$REPO_BRANCH"
     ok "Repository updated"
 else
+    echo "  Cloning $REPO_URL branch $REPO_BRANCH..."
     git clone --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
     ok "Repository cloned"
 fi
 
 # ── 10. Composer dependencies ─────────────────────────────────────────────────
-info "Installing PHP dependencies..."
-composer install --working-dir="$APP_DIR" --no-dev --optimize-autoloader --no-interaction -q
+info "Step 10: PHP dependencies (composer install)"
+composer install --working-dir="$APP_DIR" --no-dev --optimize-autoloader --no-interaction
 ok "PHP dependencies installed"
 
 # ── 11. .env setup ─────────────────────────────────────────────────────────────
-info "Setting up .env..."
+info "Step 11: .env configuration"
 if [ ! -f "$APP_DIR/.env" ]; then
     cp "$APP_DIR/.env.example" "$APP_DIR/.env"
-
-    # Auto-fill generated values
     sed -i "s|APP_URL=.*|APP_URL=https://${DOMAIN}|" "$APP_DIR/.env"
     sed -i "s|DB_CONNECTION=.*|DB_CONNECTION=mysql|" "$APP_DIR/.env"
     sed -i "s|DB_DATABASE=.*|DB_DATABASE=${DB_NAME}|" "$APP_DIR/.env"
@@ -131,29 +196,21 @@ if [ ! -f "$APP_DIR/.env" ]; then
     sed -i "s|SESSION_DRIVER=.*|SESSION_DRIVER=file|" "$APP_DIR/.env"
     sed -i "s|CACHE_DRIVER=.*|CACHE_DRIVER=file|" "$APP_DIR/.env"
     sed -i "s|QUEUE_CONNECTION=.*|QUEUE_CONNECTION=database|" "$APP_DIR/.env"
-
-    # Fix inline comments in .env
-    sed -i 's|CHECK_FREQUENCY=daily.*|CHECK_FREQUENCY=daily|' "$APP_DIR/.env"
-    sed -i 's|CHECK_TIME_1=08:00.*|CHECK_TIME_1=08:00|' "$APP_DIR/.env"
-    sed -i 's|CHECK_TIME_2=20:00.*|CHECK_TIME_2=20:00|' "$APP_DIR/.env"
-
-    # Set Playwright Chromium path (installed by Playwright for root)
-    CHROMIUM_PATH=$(find /root/.cache/ms-playwright -name "chrome" -type f 2>/dev/null | head -1 || true)
-    if [ -n "$CHROMIUM_PATH" ]; then
-        sed -i "s|PLAYWRIGHT_CHROMIUM_PATH=.*|PLAYWRIGHT_CHROMIUM_PATH=${CHROMIUM_PATH}|" "$APP_DIR/.env"
-    fi
-
-    # Set Python script path
+    sed -i 's|CHECK_FREQUENCY=.*|CHECK_FREQUENCY=daily|' "$APP_DIR/.env"
+    sed -i 's|CHECK_TIME_1=.*|CHECK_TIME_1=08:00|' "$APP_DIR/.env"
+    sed -i 's|CHECK_TIME_2=.*|CHECK_TIME_2=20:00|' "$APP_DIR/.env"
     sed -i "s|PYTHON_SCRIPT_PATH=.*|PYTHON_SCRIPT_PATH=${APP_DIR}/traffic_checker.py|" "$APP_DIR/.env"
     sed -i "s|PYTHON_BIN=.*|PYTHON_BIN=/usr/bin/python3|" "$APP_DIR/.env"
-
+    if [ -n "$CHROMIUM_BIN" ]; then
+        sed -i "s|PLAYWRIGHT_CHROMIUM_PATH=.*|PLAYWRIGHT_CHROMIUM_PATH=${CHROMIUM_BIN}|" "$APP_DIR/.env"
+    fi
     ok ".env created"
 else
-    ok ".env already exists — skipping"
+    skip ".env (already exists)"
 fi
 
 # ── 12. Storage & permissions ─────────────────────────────────────────────────
-info "Setting up storage and permissions..."
+info "Step 12: Storage directories and permissions"
 mkdir -p "$APP_DIR/storage/framework/"{sessions,views,cache/data}
 mkdir -p "$APP_DIR/storage/logs"
 mkdir -p "$APP_DIR/bootstrap/cache"
@@ -164,21 +221,32 @@ chmod -R 775 "$APP_DIR/storage" "$APP_DIR/bootstrap/cache"
 chmod +x "$APP_DIR/artisan"
 ok "Permissions set"
 
-# ── 13. Laravel setup ─────────────────────────────────────────────────────────
-info "Running Laravel setup..."
+# ── 13. Laravel artisan setup ─────────────────────────────────────────────────
+info "Step 13: Laravel setup"
 cd "$APP_DIR"
-PHP_BIN="php"
 
-$PHP_BIN artisan key:generate --force
-$PHP_BIN artisan config:cache
-$PHP_BIN artisan route:cache
-$PHP_BIN artisan view:cache
-$PHP_BIN artisan migrate --force --seed
-$PHP_BIN artisan storage:link 2>/dev/null || true
+echo "  → key:generate"
+php artisan key:generate --force
+
+echo "  → config:cache"
+php artisan config:cache
+
+echo "  → route:cache"
+php artisan route:cache
+
+echo "  → view:cache"
+php artisan view:cache
+
+echo "  → migrate --seed"
+php artisan migrate --force --seed
+
+echo "  → storage:link"
+php artisan storage:link 2>/dev/null || true
+
 ok "Laravel configured"
 
 # ── 14. Nginx virtual host ────────────────────────────────────────────────────
-info "Configuring Nginx..."
+info "Step 14: Nginx virtual host"
 cat > /etc/nginx/sites-available/traffic-checker << NGINX
 server {
     listen 80;
@@ -187,7 +255,6 @@ server {
     index index.php;
     charset utf-8;
 
-    # Security headers
     add_header X-Frame-Options "SAMEORIGIN";
     add_header X-Content-Type-Options "nosniff";
 
@@ -215,28 +282,36 @@ NGINX
 
 ln -sf /etc/nginx/sites-available/traffic-checker /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
+nginx -t
+systemctl reload nginx
 ok "Nginx configured for $DOMAIN"
 
-# ── 15. SSL with Certbot ──────────────────────────────────────────────────────
-info "Installing Certbot for SSL..."
-apt-get install -y -qq certbot python3-certbot-nginx
-echo ""
-echo -e "${YELLOW}  To enable HTTPS run:${NC}"
-echo "  certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m admin@${DOMAIN}"
-echo ""
-
-# ── 16. Cron — Laravel scheduler ──────────────────────────────────────────────
-info "Setting up cron job..."
-CRON_JOB="* * * * * $APP_USER php $APP_DIR/artisan schedule:run >> /dev/null 2>&1"
-if ! crontab -l 2>/dev/null | grep -q "artisan schedule:run"; then
-    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+# ── 15. Certbot ───────────────────────────────────────────────────────────────
+info "Step 15: Certbot (SSL)"
+if installed certbot; then
+    skip "Certbot"
+else
+    apt-get install -y certbot python3-certbot-nginx
+    ok "Certbot installed"
 fi
-ok "Cron job added"
 
-# ── 17. Supervisor for queue worker ──────────────────────────────────────────
-info "Installing Supervisor..."
-apt-get install -y -qq supervisor
+# ── 16. Cron ─────────────────────────────────────────────────────────────────
+info "Step 16: Laravel scheduler cron"
+if crontab -l 2>/dev/null | grep -q "artisan schedule:run"; then
+    skip "Cron job"
+else
+    (crontab -l 2>/dev/null; echo "* * * * * $APP_USER php $APP_DIR/artisan schedule:run >> /dev/null 2>&1") | crontab -
+    ok "Cron job added"
+fi
+
+# ── 17. Supervisor ────────────────────────────────────────────────────────────
+info "Step 17: Supervisor (queue worker)"
+if installed supervisord || installed supervisorctl; then
+    skip "Supervisor (already installed)"
+else
+    apt-get install -y supervisor
+    ok "Supervisor installed"
+fi
 
 cat > /etc/supervisor/conf.d/traffic-checker.conf << SUPERVISOR
 [program:traffic-checker-worker]
@@ -254,44 +329,42 @@ stdout_logfile=${APP_DIR}/storage/logs/worker.log
 stopwaitsecs=3600
 SUPERVISOR
 
-supervisorctl reread && supervisorctl update
+supervisorctl reread
+supervisorctl update
 ok "Supervisor configured"
 
-# ── 18. UFW Firewall ──────────────────────────────────────────────────────────
-info "Configuring firewall..."
-apt-get install -y -qq ufw
-ufw --force reset > /dev/null
-ufw default deny incoming > /dev/null
-ufw default allow outgoing > /dev/null
-ufw allow ssh > /dev/null
-ufw allow 80/tcp > /dev/null
-ufw allow 443/tcp > /dev/null
-ufw --force enable > /dev/null
-ok "Firewall configured (SSH, HTTP, HTTPS allowed)"
+# ── 18. UFW Firewall ─────────────────────────────────────────────────────────
+info "Step 18: UFW Firewall"
+apt-get install -y ufw
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
+ok "Firewall configured"
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "============================================================"
 echo -e "${GREEN}  ✅  Setup complete!${NC}"
 echo "============================================================"
 echo ""
-echo "  App URL   : http://${DOMAIN}"
-echo "  App dir   : $APP_DIR"
-echo "  DB name   : $DB_NAME"
-echo "  DB user   : $DB_USER"
-echo "  DB pass   : $DB_PASS"
-echo "  DB root   : $DB_ROOT_PASS"
+echo "  URL      : http://${DOMAIN}"
+echo "  App      : $APP_DIR"
+echo "  DB name  : $DB_NAME"
+echo "  DB user  : $DB_USER"
+echo "  DB pass  : $DB_PASS"
+echo "  DB root  : $DB_ROOT_PASS"
 echo ""
-echo -e "${YELLOW}  IMPORTANT — save these credentials!${NC}"
+echo -e "${YELLOW}  ⚠  Save the passwords above!${NC}"
 echo ""
 echo "  Next steps:"
 echo "  1. Copy traffic_checker.py to: $APP_DIR/traffic_checker.py"
-echo "  2. Edit $APP_DIR/.env and fill in:"
-echo "       FILAMENT_ADMIN_EMAIL, FILAMENT_ADMIN_PASSWORD"
-echo "       MAIL_*, WHATSAPP_* settings"
-echo "  3. Enable SSL: certbot --nginx -d ${DOMAIN} --agree-tos -m your@email.com"
-echo "  4. Re-seed admin user after updating .env:"
-echo "       php $APP_DIR/artisan db:seed --class=AdminUserSeeder"
+echo "  2. Edit $APP_DIR/.env — set FILAMENT_ADMIN_EMAIL + FILAMENT_ADMIN_PASSWORD"
+echo "  3. Re-seed admin:  php $APP_DIR/artisan db:seed --class=AdminUserSeeder"
+echo "  4. Enable SSL:     certbot --nginx -d ${DOMAIN} --agree-tos -m your@email.com"
 echo ""
-echo "  Login at: http://${DOMAIN}/login"
+echo "  Login: http://${DOMAIN}/login"
 echo "============================================================"
