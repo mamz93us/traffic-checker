@@ -48,19 +48,16 @@ apt-get install -y -qq \
     php${PHP_VER}-fpm \
     php${PHP_VER}-cli \
     php${PHP_VER}-mysql \
-    php${PHP_VER}-pgsql \
     php${PHP_VER}-sqlite3 \
     php${PHP_VER}-mbstring \
     php${PHP_VER}-xml \
     php${PHP_VER}-curl \
     php${PHP_VER}-zip \
     php${PHP_VER}-bcmath \
-    php${PHP_VER}-tokenizer \
-    php${PHP_VER}-fileinfo \
-    php${PHP_VER}-openssl \
     php${PHP_VER}-gd \
     php${PHP_VER}-intl \
     php${PHP_VER}-redis
+# Note: openssl, tokenizer, fileinfo are built into PHP core on Ubuntu — no separate package needed
 ok "PHP $PHP_VER installed"
 
 # ── 4. Composer ───────────────────────────────────────────────────────────────
