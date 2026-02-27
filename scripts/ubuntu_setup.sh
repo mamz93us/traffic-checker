@@ -260,10 +260,10 @@ info "Step 9: Repository"
 # Allow root to run git in APP_DIR even if it's owned by APP_USER
 git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 if [ -d "$APP_DIR/.git" ]; then
-    echo "  Repo exists — pulling latest..."
+    echo "  Repo exists — fetching and hard-resetting to origin..."
     git -C "$APP_DIR" fetch origin
     git -C "$APP_DIR" checkout "$REPO_BRANCH"
-    git -C "$APP_DIR" pull origin "$REPO_BRANCH"
+    git -C "$APP_DIR" reset --hard "origin/$REPO_BRANCH"
     ok "Repository updated"
 else
     echo "  Cloning $REPO_URL branch $REPO_BRANCH..."
