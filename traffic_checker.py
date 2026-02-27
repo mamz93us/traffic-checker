@@ -71,9 +71,9 @@ VEHICLES = [
 ]
 
 # ── Browser settings ────────────────────────────────────────────────
-HEADLESS = False    # False = show browser window (recommended first time)
-                    # True  = no window, silent mode (good for cron/server)
-SLOW_MO  = 600      # Milliseconds between actions. Increase to 1000+ if site is slow.
+HEADLESS = True     # True  = no window, silent mode (required for server/cron)
+                    # False = show browser window (for local debugging only)
+SLOW_MO  = 300      # Milliseconds between actions (300 is good for server)
 TIMEOUT  = 40_000   # Milliseconds per wait/click (40 seconds)
 
 # ── Output settings ─────────────────────────────────────────────────
